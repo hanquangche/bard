@@ -84,8 +84,8 @@ v2 features in progress.
 
 - [x] Idle timeout (auto-leave after 5 min empty queue)
 - [x] `!remove <n>` + `!shuffle`
-- [ ] Cog-level `cog_command_error` handler (errors visible in Discord)
-- [ ] Cron auto-rebuild on the VM (keeps yt-dlp fresh)
+- [x] Cog-level `cog_command_error` handler (errors visible in Discord)
+- [x] Cron auto-rebuild on the VM (keeps yt-dlp fresh)
 - [ ] Search pick-list (top-5 results, user chooses)
 - [ ] Spotify link support (resolve via Spotify API → search YouTube)
 - [ ] Queue persistence across restarts

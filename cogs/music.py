@@ -76,7 +76,7 @@ class Track:
 class GuildPlayer:
     """Per-server queue + player loop + settings."""
 
-    IDLE_TIMEOUT = 300   # seconds of empty queue before auto-leave
+    IDLE_TIMEOUT = 10   # seconds of empty queue before auto-leave
 
     def __init__(self, ctx: commands.Context, cog: "Music"):
         self.bot = ctx.bot

@@ -191,6 +191,56 @@ class GuildPlayer:
             self.task.cancel()
 
 
+class SearchView(discord.ui.View):
+    """Numbered pick-buttons for !search results. Only the searcher may pick."""
+
+    def __init__(self, cog: "Music", ctx: commands.Context, tracks: list[Track]):
+        super().__init__(timeout=30)
+        self.cog = cog
+        self.ctx = ctx
+        self.tracks = tracks
+        self.message: discord.Message | None = None
+        for index in range(len(tracks)):
+            button = discord.ui.Button(
+                label=str(index + 1), style=discord.ButtonStyle.secondary
+            )
+            button.callback = self._picker(index)
+            self.add_item(button)
+
+    def _picker(self, index: int):
+        async def pick(interaction: discord.Interaction):
+            if interaction.user.id != self.ctx.author.id:
+                return await interaction.response.send_message(
+                    "This isn't your search — run your own `!search`.",
+                    ephemeral=True,
+                )
+            await interaction.response.defer()
+            ctx = self.ctx
+            if ctx.voice_client is None:
+                await ctx.invoke(self.cog.join)
+                if ctx.voice_client is None:
+                    return  # join already said why; buttons stay live
+            self.stop()   # committing to this pick — cancel the 30s timeout
+            track = self.tracks[index]
+            await self.cog.get_player(ctx).queue.put(track)
+            self._disable_all()
+            await self.message.edit(
+                content=f"➕ Queued **{track.title}**", embed=None, view=self
+            )
+        return pick
+
+    def _disable_all(self):
+        for child in self.children:
+            child.disabled = True
+
+    async def on_timeout(self):
+        self._disable_all()
+        if self.message:
+            await self.message.edit(
+                content="⌛ Search expired.", embed=None, view=self
+            )
+
+
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -265,6 +315,37 @@ class Music(commands.Cog):
                         f"➕ Queued **{track.title}** "
                         f"(position {player.queue.qsize()})"
                     )
+
+    @commands.command(aliases=["find"])
+    async def search(self, ctx: commands.Context, *, query: str):
+        """Search YouTube and pick one of the top 5 results, e.g. !search lofi"""
+        async with ctx.typing():
+            data = await self.bot.loop.run_in_executor(
+                None,
+                lambda: ytdl_playlist.extract_info(
+                    f"ytsearch5:{query}", download=False
+                ),
+            )
+        entries = [e for e in ((data or {}).get("entries") or []) if e][:5]
+        if not entries:
+            return await ctx.send(f"🔍 No results for **{query}**.")
+        # Unresolved Tracks: flat title/URL now, full resolution at play time
+        tracks = [
+            Track(e["url"], ctx.author,
+                  title=e.get("title"), duration=e.get("duration") or 0)
+            for e in entries
+        ]
+        embed = discord.Embed(
+            title=f"🔍 Results for: {query}",
+            description="\n".join(
+                f"**{i}.** {t.title} [{t.pretty_duration}]"
+                for i, t in enumerate(tracks, start=1)
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Click a number to queue it — 30s")
+        view = SearchView(self, ctx, tracks)
+        view.message = await ctx.send(embed=embed, view=view)
 
     @commands.command(aliases=["vol"])
     async def volume(self, ctx: commands.Context, level: int):

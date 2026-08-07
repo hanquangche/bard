@@ -1,5 +1,6 @@
 import asyncio
 import time
+import traceback
 
 import discord
 import yt_dlp
@@ -76,7 +77,7 @@ class Track:
 class GuildPlayer:
     """Per-server queue + player loop + settings."""
 
-    IDLE_TIMEOUT = 10   # seconds of empty queue before auto-leave
+    IDLE_TIMEOUT = 1800   # seconds of empty queue before auto-leave
 
     def __init__(self, ctx: commands.Context, cog: "Music"):
         self.bot = ctx.bot
@@ -106,64 +107,78 @@ class GuildPlayer:
         return embed
 
     async def player_loop(self):
-        while True:
-            self.next_song.clear()
+        try:
+            while True:
+                self.next_song.clear()
 
-            # loop-track: replay current unless the user skipped past it
-            if (self.loop_mode == "track" and self.current
-                    and not self.skip_requested):
-                track = self.current
-            else:
-                try:
-                    track = await asyncio.wait_for(
-                        self.queue.get(), timeout=self.IDLE_TIMEOUT
-                    )
-                except asyncio.TimeoutError:
-                    await self.channel.send(
-                        "👋 Nothing queued for a while — leaving the voice "
-                        "channel. `!play` me back anytime!"
-                    )
+                # loop-track: replay current unless the user skipped past it
+                if (self.loop_mode == "track" and self.current
+                        and not self.skip_requested):
+                    track = self.current
+                else:
+                    try:
+                        track = await asyncio.wait_for(
+                            self.queue.get(), timeout=self.IDLE_TIMEOUT
+                        )
+                    except asyncio.TimeoutError:
+                        await self.channel.send(
+                            "👋 Nothing queued for a while — leaving the voice "
+                            "channel. `!play` me back anytime!"
+                        )
+                        await self.destroy()
+                        return
+                self.skip_requested = False
+
+                if track.needs_resolving:
+                    try:
+                        await track.resolve(self.bot.loop)
+                    except Exception as e:
+                        await self.channel.send(
+                            f"⚠️ Couldn't play **{track.title}** — skipping. ({e})"
+                        )
+                        continue
+
+                # raise RuntimeError("test crash") # uncomment to test error handling
+
+                vc = self.guild.voice_client
+                if vc is None:
                     await self.destroy()
                     return
-            self.skip_requested = False
 
-            if track.needs_resolving:
-                try:
-                    await track.resolve(self.bot.loop)
-                except Exception as e:
-                    await self.channel.send(
-                        f"⚠️ Couldn't play **{track.title}** — skipping. ({e})"
-                    )
-                    continue
+                replaying = track is self.current
+                self.current = track
+                source = discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(track.stream_url, **FFMPEG_OPTS),
+                    volume=self.volume,
+                )
+                vc.play(
+                    source,
+                    after=lambda _: self.bot.loop.call_soon_threadsafe(
+                        self.next_song.set
+                    ),
+                )
+                if not replaying:  # don't spam the embed on every loop-track repeat
+                    await self.channel.send(embed=self.now_playing_embed())
 
-            vc = self.guild.voice_client
-            if vc is None:
-                return
+                await self.next_song.wait()
 
-            replaying = track is self.current
-            self.current = track
-            source = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(track.stream_url, **FFMPEG_OPTS),
-                volume=self.volume,
+                # loop-queue: finished songs go to the back of the line
+                if self.loop_mode == "queue" and not self.skip_requested:
+                    await self.queue.put(track)
+                if self.loop_mode != "track" or self.skip_requested:
+                    if self.loop_mode == "queue" and self.skip_requested:
+                        await self.queue.put(track)   # skipped songs still requeue
+                    self.current = None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            traceback.print_exc()
+            await self.channel.send(
+                "💥 The player hit an unexpected error and reset — "
+                "`!play` to start fresh."
             )
-            vc.play(
-                source,
-                after=lambda _: self.bot.loop.call_soon_threadsafe(
-                    self.next_song.set
-                ),
-            )
-            if not replaying:  # don't spam the embed on every loop-track repeat
-                await self.channel.send(embed=self.now_playing_embed())
-
-            await self.next_song.wait()
-
-            # loop-queue: finished songs go to the back of the line
-            if self.loop_mode == "queue" and not self.skip_requested:
-                await self.queue.put(track)
-            if self.loop_mode != "track" or self.skip_requested:
-                if self.loop_mode == "queue" and self.skip_requested:
-                    await self.queue.put(track)   # skipped songs still requeue
-                self.current = None
+            await self.destroy()
+            
 
     async def destroy(self):
         """Disconnect and deregister this player. Safe to call from anywhere."""

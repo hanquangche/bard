@@ -5,6 +5,7 @@ import traceback
 import discord
 import yt_dlp
 from discord.ext import commands
+import random
 
 YTDL_OPTS = {
     "format": "bestaudio/best",
@@ -311,6 +312,36 @@ class Music(commands.Cog):
                 break
             lines.append(f"{i}. {track.title} [{track.pretty_duration}]")
         await ctx.send("\n".join(lines))
+
+    @commands.command(aliases=["rm"])
+    async def remove(self, ctx: commands.Context, position: int = None):
+        """Remove the queued track at a position, e.g. !remove 3 (see !queue)"""
+        player = self.get_player(ctx)
+        dq = player.queue._queue
+        if not dq:
+            return await ctx.send("Queue is empty — nothing to remove.")
+        if position is None or not 1 <= position <= len(dq):
+            return await ctx.send(
+                f"Pick a position between 1 and {len(dq)} — `!queue` shows the numbers."
+            )
+        index = position - 1   # 1-based display → 0-based deque, converted once
+        # Direct deque mutation is safe (invariant 5): no await between the
+        # bounds check above and the deletion, so the player loop can't run.
+        removed = dq[index]
+        del dq[index]
+        await ctx.send(f"🗑️ Removed **{removed.title}**.")
+
+    @commands.command()
+    async def shuffle(self, ctx: commands.Context):
+        """Shuffle the pending queue (doesn't touch the current track)."""
+        player = self.get_player(ctx)
+        dq = player.queue._queue
+        if len(dq) < 2:
+            return await ctx.send("Nothing to shuffle — queue up at least 2 tracks.")
+        # Direct deque mutation is safe (invariant 5): no await between the
+        # length check and the shuffle, so the player loop can't run.
+        random.shuffle(dq)
+        await ctx.send(f"🔀 Shuffled **{len(dq)}** tracks.")
 
     @commands.command()
     async def stop(self, ctx: commands.Context):

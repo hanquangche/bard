@@ -76,8 +76,11 @@ class Track:
 class GuildPlayer:
     """Per-server queue + player loop + settings."""
 
-    def __init__(self, ctx: commands.Context):
+    IDLE_TIMEOUT = 300   # seconds of empty queue before auto-leave
+
+    def __init__(self, ctx: commands.Context, cog: "Music"):
         self.bot = ctx.bot
+        self.cog = cog
         self.guild = ctx.guild
         self.channel = ctx.channel
         self.queue: asyncio.Queue[Track] = asyncio.Queue()
@@ -111,7 +114,17 @@ class GuildPlayer:
                     and not self.skip_requested):
                 track = self.current
             else:
-                track = await self.queue.get()
+                try:
+                    track = await asyncio.wait_for(
+                        self.queue.get(), timeout=self.IDLE_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    await self.channel.send(
+                        "👋 Nothing queued for a while — leaving the voice "
+                        "channel. `!play` me back anytime!"
+                    )
+                    await self.destroy()
+                    return
             self.skip_requested = False
 
             if track.needs_resolving:
@@ -152,6 +165,15 @@ class GuildPlayer:
                     await self.queue.put(track)   # skipped songs still requeue
                 self.current = None
 
+    async def destroy(self):
+        """Disconnect and deregister this player. Safe to call from anywhere."""
+        self.cog.players.pop(self.guild.id, None)
+        vc = self.guild.voice_client
+        if vc:
+            await vc.disconnect()
+        if self.task is not asyncio.current_task():
+            self.task.cancel()
+
 
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -160,7 +182,7 @@ class Music(commands.Cog):
 
     def get_player(self, ctx: commands.Context) -> GuildPlayer:
         if ctx.guild.id not in self.players:
-            self.players[ctx.guild.id] = GuildPlayer(ctx)
+            self.players[ctx.guild.id] = GuildPlayer(ctx, self)
         return self.players[ctx.guild.id]
 
     @commands.command()
@@ -279,8 +301,8 @@ class Music(commands.Cog):
     async def stop(self, ctx: commands.Context):
         player = self.players.pop(ctx.guild.id, None)
         if player:
-            player.task.cancel()
-        if ctx.voice_client:
+            await player.destroy()
+        elif ctx.voice_client:
             await ctx.voice_client.disconnect()
         await ctx.send("⏹️ Stopped and cleared the queue. Bye!")
 

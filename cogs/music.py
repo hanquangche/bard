@@ -201,6 +201,26 @@ class Music(commands.Cog):
             self.players[ctx.guild.id] = GuildPlayer(ctx, self)
         return self.players[ctx.guild.id]
 
+    async def cog_command_error(self, ctx: commands.Context,
+                                error: commands.CommandError):
+        """Surface command errors in Discord; player-loop errors are separate."""
+        if isinstance(error, commands.CommandNotFound):
+            return  # typo noise — no response wanted
+        if isinstance(error, commands.BadArgument):
+            await ctx.send(
+                f"That needs a number — e.g. `!{ctx.invoked_with} 3`"
+            )
+            return
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send(
+                f"Usage: `!{ctx.invoked_with} {ctx.command.signature}`"
+            )
+            return
+        # CommandInvokeError wraps the real exception — unwrap for the log
+        orig = getattr(error, "original", error)
+        await ctx.send("💥 Something went wrong with that command.")
+        traceback.print_exception(orig)  # visible in docker compose logs
+
     @commands.command()
     async def join(self, ctx: commands.Context):
         if ctx.author.voice is None:
